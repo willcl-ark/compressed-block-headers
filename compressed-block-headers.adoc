@@ -1,0 +1,148 @@
+= Compressed block headers
+Will Clark <will8clark@gmail.com>
+v1.0, May 2020:
+:toc: preamble
+:toclevels: 4
+
+
+This work is a derivation of these mailing list posts:
+
+1. https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-August/014876.html[bitcoin-dev: "Compressed" headers stream - 2017] (with resurrection https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-December/015385.html[here])
+
+2. https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-March/015851.html[bitcoin-dev: Optimized Header Sync]
+
+'''
+
+== Motivation
+
+Block headers as hashed by miners are currently 80 bytes each.
+
+For low bandwidth nodes who are doing a headers-only sync, reducing the size of the headers can provide a significant bandwidth saving. Also, full node operators like miners can have more diverse header-only peers for the same bandwidth.
+
+=== Background
+
+Current headers as sent over the p2p network as a vector of `block_headers`, which are composed of the following sized fields:
+
+[cols="<,>"]
+|===
+|Field |Size
+
+|Version |4 bytes 
+|Previous block hash |32 bytes
+|Merkle root hash |32 bytes
+|Time |4 bytes
+|nBits |4 bytes
+|nonce |4 bytes
+|txn_count |1 byte
+|*Total* |81 bytes
+|===
+
+Some fields can be removed completely, others can be compressed under certain conditions.
+
+== Proposed specification
+
+=== block_header2[] data type
+
+The following table illustrates the proposed `block_header2` data type specification.
+
+[cols="<,>,>"]
+|===
+|Field |Size |Compressed
+
+|Bitfield |1 byte | 1 byte
+|Version |4 bytes |0 \| 4 bytes
+|Previous block hash |32 bytes |0 \| 32 bytes
+|Merkle root hash |32 bytes |32 bytes
+|Time |4 bytes |2 \| 4 bytes
+|nBits |4 bytes |0 \| 4 bytes
+|nonce |4 bytes |4 bytes
+|*Total* |81 bytes |range: 39 - 81 bytes
+|===
+
+This compression results in a maximum reduction from an 81 byte header to a
+35 byte header. With 628027 blocks in the current blockchain, a continuous header
+sync from genesis (requiring a single full 81 byte header followed by only compressed headers) would have its required bandwidth reduced from 50.87MB
+down to 24.29MB, a bandwidth saving of 51.8%.
+
+==== Previous block hash
+
+The previous block hash will always be the
+`SHA256(SHA256(<previous_header>))`, so is redundant presuming you have the previous header in the chain.
+
+==== Time
+
+The timestamp (in seconds) is consensus bound, based both on the time in the previous
+header: `MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60 = 7200`, and being greater than the `MedianTimePast` of the previous 11 blocks. Therefore this can be safely represented as an offset from the previous headers' timestamp using a 2 byte `signed short int`.
+
+==== nBits
+
+nBits currently changes once every 2016 blocks. It could be entirely calculated by the client from the timestamps of the previous 2015 blocks footnote:[2015 blocks are used in the adjustment calculation due to an off-by-one error: https://bitcointalk.org/index.php?topic=43692.msg521772#msg521772"].
+
+To simplify 'light' client implementations which would otherwise require consensus-valid calculation of the adjustments, we propose to transmit this according to the <<Bitfield>> specification below.
+
+==== txn_count
+
+txn_count is included to make parsing of these messages compatible with parsing of `block` messages footnote:[https://bitcoin.stackexchange.com/questions/2104/why-is-the-block-header-txn-count-field-always-zero]. Therefore this field and it's associated byte can be removed for transmission of compact headers.
+
+=== Bitfield
+
+To make parsing of header messages easier and further increase header compression, a single byte bitfield was suggested by gmaxwell footnote:[https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-December/015397.html]. We propose the following amended bitfield meanings (bits re-ordered to match `headers2` field order):
+
+[cols="<,<"]
+|===
+|Bit |Meaning
+|0 +
+1 +
+2 |version: same as the last *distinct* value 1st ... 7th (0 byte field) or a new 32bit distinct value (4 byte field).
+|3 |prev_block_hash: is omitted (0 byte field) or included (32 byte field)
+|4 |timestamp: as small offset (2 byte field) or full (4 byte field).
+|5 |nbits: same as last header (0 byte field) or new (4 byte field).
+|6 |possibly to signal "more headers follow" to make the encoding self-delimiting.
+|7 |currently undefined
+|===
+
+=== P2P Messages
+
+==== Service bit
+
+A new service bit would be required so that the nodes can advertise their ability to supply compact headers.
+
+==== Requesting compact headers -- getheaders2
+
+The new p2p message required to request the compact headers might be called `getheaders2` and would require the same fields as the current `getheaders` message:
+
+[cols="<,<,<,<"]
+|===
+|Field Size |Description |Data type |Comments
+
+|4 |version |uint32_t |the protocol version
+|1+ |hash count |var_int |number of block locator hash entries
+|32+ |block locator hashes |char[32] |block locator object; newest back to genesis block (dense to start, but then sparse)
+|32 |hash_stop |char[32] |hash of the last desired block header; set to zero to get as many blocks as possible (2000)
+|===
+
+==== Receiving compact headers -- headers2
+
+In response, a node would return a `headers2` message containing `count` and `headers2` fields, where `headers2` contains a `block_header2[]` blob:
+
+|===
+|Field Size |Description |Data type |Comments
+
+|1+ |count |var_int |Number of block headers
+|42-46x? |headers2 |block_header2[] |Compressed block headers in <<block_header2[] data type>> format
+|===
+
+==== sendheaders2
+
+Since BIP130 footnote:[https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki], nodes have been able to request to receive new headers directly in `headers` messages, rather than via an `inv` of the new block hash and subsequent `getheader` request and `headers` response (followed by a final `getdata` to get the tip block itself, if desired) . This is requested by transmitting an empty `sendheaders` message after the version handshake is complete.
+
+Upon receipt of this message, the node is be permitted, but not required, to announce new blocks by compressed headers command (instead of inv command). This message is supported by the protocol version ≥ 70012 | Bitcoin Core version ≥ 0.12.0.
+
+For the motivational use-case it makes sense to also update this mechanism to support sending header updates using compact headers.
+
+=== Implementation
+
+* The first header in the first `block_header2[]` vector to a newly-connected client MUST contain the full `nBits`, `timestamp`, `version` and `prev_block_hash` fields.
+* Subsequent headers in a contiguous vector SHOULD follow the compressed <<block_header2[] data type>> format.
+* Compressed headers supplied to an already-connected client requesting compressed headers SHOULD follow the compressed <<block_header2[] data type>> format.
+
