@@ -129,9 +129,9 @@ The new p2p message required to request compact block headers would require the 
 
 ==== `sendheaders2` -- Request header announcements 
 
-Upon receipt of this message, the node is be permitted, but not required, to announce new blocks by compressed headers command (instead of inv command). This message is supported by the protocol version ≥ 70012 | Bitcoin Core version ≥ 0.12.0.
+Upon receipt of this message, the node is permitted, but not required, to preemptively announce new blocks with the `headers2` message (instead of inv command). Preemptive header announcement is supported by the protocol version ≥ 70012 | Bitcoin Core version ≥ 0.12.0. 
 
-Since BIP130 footnote:[https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki], nodes have been able to request to receive new headers directly in `headers` messages, rather than via an `inv` of the new block hash and subsequent `getheader` request and `headers` response (followed by a final `getdata` to get the tip block itself, if desired) . This is requested by transmitting an empty `sendheaders` message after the version handshake is complete.
+Since (https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki)[BIP130], nodes have been able to request to receive new headers directly in `headers` messages, rather than via an `inv` of the new block hash and subsequent `getheader` request and `headers` response (followed by a final `getdata` to get the tip block itself, if desired). This is requested by transmitting an empty `sendheaders` message after the version handshake is complete.]
 
 For the motivational use-case it makes sense to also update this mechanism to support sending header updates using compact headers.
 
