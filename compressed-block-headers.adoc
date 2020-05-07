@@ -64,6 +64,27 @@ This compression results in a maximum reduction from an 81 byte header to a
 sync from genesis (requiring a single full 81 byte header followed by only compressed headers) would have its required bandwidth reduced from 50.87MB
 down to 24.29MB, a bandwidth saving of 51.8%.
 
+=== Bitfield
+
+To make parsing of header messages easier and further increase header compression, a single byte bitfield was suggested by gmaxwell footnote:[https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-December/015397.html]. We propose the following amended bitfield meanings (bits re-ordered to match `headers2` field order):
+
+[cols="<,<"]
+|===
+|Bit |Meaning
+|0 +
+1 +
+2 |version: same as the last *distinct* value 1st ... 7th (0 byte field) or a new 32bit distinct value (4 byte field).
+|3 |prev_block_hash: is omitted (0 byte field) or included (32 byte field)
+|4 |timestamp: as small offset (2 byte field) or full (4 byte field).
+|5 |nbits: same as last header (0 byte field) or new (4 byte field).
+|6 |possibly to signal "more headers follow" to make the encoding self-delimiting.
+|7 |currently undefined
+|===
+
+==== Version
+
+In most cases the Version field will be identical to one referenced in a previous header as indicated by bits 0,1,2 of the Bitfield. However non-standard Version numbers can appear, for example (https://bitcoin.stackexchange.com/a/79274)[due to ASICBOOST], without invalidating the block.
+
 ==== Previous block hash
 
 The previous block hash will always be the
@@ -83,23 +104,6 @@ To simplify 'light' client implementations which would otherwise require consens
 ==== txn_count
 
 txn_count is included to make parsing of these messages compatible with parsing of `block` messages footnote:[https://bitcoin.stackexchange.com/questions/2104/why-is-the-block-header-txn-count-field-always-zero]. Therefore this field and it's associated byte can be removed for transmission of compact headers.
-
-=== Bitfield
-
-To make parsing of header messages easier and further increase header compression, a single byte bitfield was suggested by gmaxwell footnote:[https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-December/015397.html]. We propose the following amended bitfield meanings (bits re-ordered to match `headers2` field order):
-
-[cols="<,<"]
-|===
-|Bit |Meaning
-|0 +
-1 +
-2 |version: same as the last *distinct* value 1st ... 7th (0 byte field) or a new 32bit distinct value (4 byte field).
-|3 |prev_block_hash: is omitted (0 byte field) or included (32 byte field)
-|4 |timestamp: as small offset (2 byte field) or full (4 byte field).
-|5 |nbits: same as last header (0 byte field) or new (4 byte field).
-|6 |possibly to signal "more headers follow" to make the encoding self-delimiting.
-|7 |currently undefined
-|===
 
 === P2P Messages
 
