@@ -105,15 +105,17 @@ To simplify 'light' client implementations which would otherwise require consens
 
 txn_count is included to make parsing of these messages compatible with parsing of `block` messages footnote:[https://bitcoin.stackexchange.com/questions/2104/why-is-the-block-header-txn-count-field-always-zero]. Therefore this field and it's associated byte can be removed for transmission of compact headers.
 
-=== P2P Messages
-
-==== Service bit
+=== Service Bit
 
 A new service bit would be required so that the nodes can advertise their ability to supply compact headers.
 
-==== Requesting compact headers -- getheaders2
+=== P2P Messages
 
-The new p2p message required to request the compact headers might be called `getheaders2` and would require the same fields as the current `getheaders` message:
+Three new messages would be used by nodes that enable compact block header support, two query messages: `getheaders2` and `sendheaders2` and one response: `headers2`.
+
+==== `getheaders2` -- Requesting compact headers
+
+The new p2p message required to request compact block headers would require the same fields as the current `getheaders` message:
 
 [cols="<,<,<,<"]
 |===
@@ -125,24 +127,24 @@ The new p2p message required to request the compact headers might be called `get
 |32 |hash_stop |char[32] |hash of the last desired block header; set to zero to get as many blocks as possible (2000)
 |===
 
-==== Receiving compact headers -- headers2
+==== `sendheaders2` -- Request header announcements 
 
-In response, a node would return a `headers2` message containing `count` and `headers2` fields, where `headers2` contains a `block_header2[]` blob:
+Upon receipt of this message, the node is be permitted, but not required, to announce new blocks by compressed headers command (instead of inv command). This message is supported by the protocol version ≥ 70012 | Bitcoin Core version ≥ 0.12.0.
+
+Since BIP130 footnote:[https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki], nodes have been able to request to receive new headers directly in `headers` messages, rather than via an `inv` of the new block hash and subsequent `getheader` request and `headers` response (followed by a final `getdata` to get the tip block itself, if desired) . This is requested by transmitting an empty `sendheaders` message after the version handshake is complete.
+
+For the motivational use-case it makes sense to also update this mechanism to support sending header updates using compact headers.
+
+==== `headers2` -- Receiving compact headers
+
+A `headers2` message is returned in response to a `getheaders2` or `sendheaders2` message. It contains both `count` and `headers2` fields. The `headers` field contains a variable length blob of `block_header2[]` data:
 
 |===
 |Field Size |Description |Data type |Comments
 
 |1+ |count |var_int |Number of block headers
-|42-46x? |headers2 |block_header2[] |Compressed block headers in <<block_header2[] data type>> format
+|42-46x? |headers |block_header2[] |Compressed block headers in <<block_header2[] data type>> format
 |===
-
-==== sendheaders2
-
-Since BIP130 footnote:[https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki], nodes have been able to request to receive new headers directly in `headers` messages, rather than via an `inv` of the new block hash and subsequent `getheader` request and `headers` response (followed by a final `getdata` to get the tip block itself, if desired) . This is requested by transmitting an empty `sendheaders` message after the version handshake is complete.
-
-Upon receipt of this message, the node is be permitted, but not required, to announce new blocks by compressed headers command (instead of inv command). This message is supported by the protocol version ≥ 70012 | Bitcoin Core version ≥ 0.12.0.
-
-For the motivational use-case it makes sense to also update this mechanism to support sending header updates using compact headers.
 
 === Implementation
 
