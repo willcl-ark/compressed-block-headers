@@ -64,7 +64,7 @@ This compression results in a maximum reduction from an 81 byte header to a
 sync from genesis (requiring a single full 81 byte header followed by only compressed headers) would have its required bandwidth reduced from 50.87MB
 down to 24.29MB, a bandwidth saving of 51.8%.
 
-=== Bitfield
+==== Bitfield
 
 To make parsing of header messages easier and further increase header compression, a single byte bitfield was suggested by gmaxwell footnote:[https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-December/015397.html]. We propose the following amended bitfield meanings (bits re-ordered to match `headers2` field order):
 
