@@ -33,8 +33,7 @@ Currently headers are sent over the p2p network as a vector of `block_headers`, 
 |Time                |4 bytes
 |nBits               |4 bytes
 |nonce               |4 bytes
-|txn_count           |1 byte
-|*Total*             |81 bytes
+|*Total*             |80 bytes
 |===
 
 Some fields can be removed completely, others can be compressed under certain conditions.
@@ -144,9 +143,11 @@ txn_count is included to make parsing of these messages compatible with parsing 
 |629,474          |629,474     |0              |100
 |===
 
-=== Service Bit
+=== Negotiation
 
-A new service bit would be required so that the nodes can advertise their ability to supply compact headers.
+Negotiation of compressed block headers can happen at the p2p layer via message exchange between `version` and `verack` messages.
+
+It might be possible to negotiate feature use then simply supply compact headers in current `headers` messages in response to `getheaders` rather than using the 3 new message types defined below.
 
 === P2P Messages
 
