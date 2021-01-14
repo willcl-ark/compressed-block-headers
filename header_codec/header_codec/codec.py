@@ -11,10 +11,10 @@ Bit                 Set                                 Unset
 3 prev_block_hash:  omitted (0 byte field).             new 4 byte hash to follow
 4 timestamp:        2 byte offset from previous.        new 4 byte timestamp to follow
 5 nBits:            same as previous (0 byte field).    new 4 byte field to follow
-6
+6 sequence_end:     last header in sequence.            more headers to follow
 7
 
-Header structure:
+Uncompressed header structure:
 ---------------------
 version         0:4
 prev_block_hash 4:36
@@ -41,6 +41,7 @@ mask_version         = 0b10000000
 mask_prev_block_hash = 0b00010000
 mask_time            = 0b00001000
 mask_nBits           = 0b00000100
+mask_end             = 0b00000010
 
 
 class CompressionError(Exception):
@@ -54,20 +55,29 @@ def hash_header(header: bytes):
 def _compress(in_stream: BytesIO, out_stream: BytesIO):
     while True:
         in_pos_start = in_stream.tell()
-        out_pos_start = out_stream.tell()
         prev_header = in_stream.read(HEADER_LEN)
         next_header = in_stream.read(HEADER_LEN)
         # Rewind for the next iteration to read prev_header from the right place
         in_stream.seek(in_pos_start + HEADER_LEN)
 
-        # Break here if we reached stream EOF
-        if next_header == b"":
+        if not next_header:
+            # Rewind the stream and set the sequence end bit of the bitfield
+            # Only done once per sequence
+            end = out_stream.tell()
+            out_stream.seek(out_pos_start)
+            bitfield = int.from_bytes(out_stream.read(1), "little") ^ mask_end
+            out_stream.seek(out_pos_start)
+            out_stream.write(bitfield.to_bytes(1, "little"))
+            out_stream.seek(end)
             break
+
+        # Mark where we start so we can rewind when we set the sequence_end bit
+        out_pos_start = out_stream.tell()
+        # Advance out_stream 1 byte for bitfield after we've configured it
+        out_stream.seek(out_pos_start + 1)
 
         # Init empty bitfield
         bitfield = 0b00000000
-        # Advance out_stream a byte to leave room for our bitfield after we've set it
-        out_stream.seek(out_pos_start + 1)
 
         # Version
         if prev_header[0:4] == next_header[0:4]:
@@ -136,7 +146,9 @@ def compress_headers(in_stream: BytesIO, out_stream: BytesIO) -> bool:
 
 def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
     first = True
-    while True:
+    end = False
+
+    while not end:
         # On the first iteration only prev_header is taken from function parameter
         if first:
             prev_header = BytesIO(prev_header)
@@ -148,11 +160,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
             prev_header = BytesIO(out_stream.read(HEADER_LEN))
 
         # Bitfield
-        _b = in_stream.read(1)
-        if _b == b"":
-            # EOF reached
-            break
-        bitfield = int.from_bytes(_b, "little")
+        bitfield = int.from_bytes(in_stream.read(1), "little")
 
         # Version
         if bitfield & mask_version:
@@ -188,6 +196,10 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
 
         # Nonce
         out_stream.write(in_stream.read(4))
+
+        # Check if this is final header
+        if bitfield & mask_end:
+            end = True
 
 
 def decompress_headers(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes) -> bool:
