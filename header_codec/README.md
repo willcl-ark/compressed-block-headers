@@ -43,3 +43,11 @@ decompression_out.seek(0)
 assert compression_in.read() == decompression_out.read()
 ```
 
+## Tests
+To run the tests, make sure you have bitcoind running with flag `-rest=1` to enable the unauthenticated REST API which is used to fetch headers.
+
+Next, to run the default test (entire chain compression) simply run:
+```bash
+python3 tests/tests.py
+```
+
