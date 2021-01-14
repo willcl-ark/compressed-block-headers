@@ -107,7 +107,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         out_stream.seek(out_pos_end)
 
 
-def compress(in_stream: BytesIO, out_stream: BytesIO) -> bool:
+def compress_headers(in_stream: BytesIO, out_stream: BytesIO) -> bool:
     """
     Compress takes a stream of headers of length (start ... end)
     It compresses and returns (start + 1 ... end) into a return stream
@@ -185,7 +185,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
         out_stream.write(in_stream.read(4))
 
 
-def decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes) -> bool:
+def decompress_headers(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes) -> bool:
     """
     decompress takes a stream of compressed header(s) of length (start ... end) and a
     previous_header bytes object.
