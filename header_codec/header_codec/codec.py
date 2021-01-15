@@ -37,11 +37,11 @@ logger = logging.getLogger("codec")
 
 
 # Bitfield masks
-mask_version         = 0b10000000
+mask_version = 0b10000000
 mask_prev_block_hash = 0b00010000
-mask_time            = 0b00001000
-mask_nBits           = 0b00000100
-mask_end             = 0b00000010
+mask_time = 0b00001000
+mask_nBits = 0b00000100
+mask_end = 0b00000010
 
 
 class CompressionError(Exception):
@@ -202,7 +202,9 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
             end = True
 
 
-def decompress_headers(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes) -> bool:
+def decompress_headers(
+    in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes
+) -> bool:
     """
     decompress takes a stream of compressed header(s) of length (start ... end) and a
     previous_header bytes object.
