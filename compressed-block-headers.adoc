@@ -1,6 +1,6 @@
 = Compressed block headers
 Will Clark <will8clark@gmail.com>
-v1.0, May 2020:
+v1.1, Jan 2021:
 :toc: preamble
 :toclevels: 4
 
@@ -21,7 +21,7 @@ For low bandwidth nodes who are doing a headers-only sync, reducing the size of 
 
 === Background
 
-Currently headers are sent over the p2p network as a vector of `block_headers`, which are composed of the following sized fields:
+Currently, headers are sent over the p2p network as a vector of `block_headers`, which are composed of the following constant-size fields:
 
 [cols="<,>"]
 |===
@@ -48,41 +48,41 @@ The following table illustrates the proposed `block_header2` data type specifica
 |===
 |Field               |Size     |Compressed
 
-|Bitfield            |1 byte   | 1 byte
+|Bitfield            |1 byte   |1 byte
 |Version             |4 bytes  |0 \| 4 bytes
-|Previous block hash |32 bytes |0 \| 32 bytes
+|Previous block hash |32 bytes |0 bytes
 |Merkle root hash    |32 bytes |32 bytes
 |Time                |4 bytes  |2 \| 4 bytes
 |nBits               |4 bytes  |0 \| 4 bytes
 |nonce               |4 bytes  |4 bytes
-|*Total*             |81 bytes |range: 39 - 81 bytes
+|*Total*             |80 bytes |range: 39 - 49 bytes
 |===
 
-This compression results in a maximum reduction from an 81 byte header to best-case 39 byte header. With 629,474 blocks in the current blockchain, a continuous header sync from genesis (requiring a single full 81 byte header followed by only compressed `block_header2`) has been tested to have its required bandwidth reduced from 50.98MB down to 25.86MB, a saving of 49%.
+This compression results in a maximum reduction from an 80 byte header to best-case 39 byte header. With 629,474 blocks in the current blockchain, a continuous header sync from genesis (requiring a single full 80 byte header followed by only compressed `block_header2`) has been tested to have its required bandwidth reduced from 50.36MB down to 25.86MB, a saving of 49%.
 
 ==== Bitfield
 
 To make parsing of header messages easier and further increase header compression, a single byte bitfield was suggested by gmaxwell footnote:[https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-December/015397.html]. We propose the following amended bitfield meanings (bits re-ordered to match `headers2` field order):
 
-[cols="<,<"]
+[cols="<,<,<,<"]
 |===
-|Bit |Meaning + field size to read
+|Bit |Header field |Set |Unset
 
 |0 +
 1 +
-2    |version: same as the last *distinct* value 1st ... 7th (0 byte field) or a new 32bit distinct value (4 byte field).
-|3   |prev_block_hash: is omitted (0 byte field) or included (32 byte field)
-|4   |timestamp: as small offset (2 byte field) or full (4 byte field).
-|5   |nbits: same as last header (0 byte field) or new (4 byte field).
-|6   |sequence_end: bit set indicates final header in sequence.
-|7   |currently undefined
+2    |version |same as the `nth` last *distinct* version 0 ... 7 |new distinct version
+|3   |prev_block_hash |is omitted |included
+|4   |timestamp |as 2 byte offset |full 4 byte value
+|5   |nbits |same as previous header |new 4 byte value
+|6   |sequence_end |final header in sequence |more headers to follow
+|7   |currently undefined ||
 |===
 
 This bitfield adds 1 byte for every block in the chain, for a current total increase of 629,474B.
 
 ==== Version
 
-In most cases the Version field will be identical to one referenced in one of the previous 7 unique versions, as indicated by bits 0,1,2 of the Bitfield.
+In most cases the Version field will be identical to one of the previous 7 unique versions as indicated by bits 0,1 and 2 of the Bitfield.
 
 To block 629,474 there were 616,137 blocks whose version was in the previous 7 distinct versions, and only 13,338 blocks whose version was not, this includes any version bit manipulation done via overt ASIC boost.
 
@@ -108,7 +108,7 @@ The previous block hash will always be the
 ==== Time
 
 The timestamp (in seconds) is consensus bound, based both on the time in the previous
-header: `MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60 = 7200`, and being greater than the `MedianTimePast` of the previous 11 blocks. Therefore this can be safely represented as an offset from the previous headers' timestamp using a 2 byte `signed short int`.
+header: `MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60 = 7200`, and being greater than the `MedianTimePast` of the previous 11 blocks. Therefore, this can be safely represented as an offset from the previous headers' timestamp using a 2 byte `signed short int`.
 
 [cols=">,>,>,>"]
 |===
@@ -134,7 +134,7 @@ To block 629,474 there have been 298 nBits adjustments (vs an expected 311 -- th
 
 ==== txn_count
 
-txn_count is included to make parsing of these messages compatible with parsing of `block` messages footnote:[https://bitcoin.stackexchange.com/questions/2104/why-is-the-block-header-txn-count-field-always-zero]. Therefore this field and its associated byte can be removed for transmission of compact headers.
+txn_count is included to make parsing of these messages compatible with parsing of `block` messages footnote:[https://bitcoin.stackexchange.com/questions/2104/why-is-the-block-header-txn-count-field-always-zero]. Therefore this field and its associated byte can be removed for transmission of compressed headers.
 
 [cols=">,>,>,>"]
 |===
@@ -145,17 +145,17 @@ txn_count is included to make parsing of these messages compatible with parsing 
 
 === Negotiation
 
-Negotiation of compressed block headers can happen at the p2p layer via message exchange between `version` and `verack` messages.
-
-It might be possible to negotiate feature use then simply supply compact headers in current `headers` messages in response to `getheaders` rather than using the 3 new message types defined below.
+Negotiation of compressed block headers could happen at the p2p layer via message exchange between `version` and `verack` messages.
 
 === P2P Messages
 
-Three new messages would be used by nodes that enable compact block header support, two query messages: `getheaders2` and `sendheaders2` and one response: `headers2`.
+Three new messages would be used by nodes that enable compressed block header support, two query messages: `getheaders2` and `sendheaders2` and one response: `headers2`.
 
-==== `getheaders2` -- Requesting compact headers
+TODO: Feature negotiation message between `version` and `verack` could overload `sendheaders2` or use another message/mechanism.
 
-The new p2p message required to request compact block headers would require the same fields as the current `getheaders` message:
+==== `getheaders2` -- Requesting compressed headers
+
+The new p2p message required to request compressed block headers would require the same fields as the current `getheaders` message:
 
 [cols=">,<,<,<"]
 |===
@@ -167,15 +167,15 @@ The new p2p message required to request compact block headers would require the 
 |32         |hash_stop            |char[32]  |hash of the last desired block header; set to zero to get as many blocks as possible (2000)
 |===
 
-==== `sendheaders2` -- Request compact header announcements
+==== `sendheaders2` -- Request compressed header announcements
 
 Since https://github.com/bitcoin/bips/blob/master/bip-0130.mediawiki[BIP-130], nodes have been able to request to receive new headers directly in `headers` messages, rather than via an `inv` of the new block hash and subsequent `getheader` request and `headers` response (followed by a final `getdata` to get the tip block itself, if desired). This is requested by transmitting an empty `sendheaders` message after the version handshake is complete.]
 
 Upon receipt of this message, the node is permitted, but not required, to preemptively announce new headers with the `headers2` message (instead of `inv`). Preemptive header announcement is supported by the protocol version ≥ 70012 | Bitcoin Core version ≥ 0.12.0.
 
-For the motivational use-case it makes sense to also update this mechanism to support sending header updates using compact headers using a new message.
+For the motivational use-case it makes sense to also update this mechanism to support sending header updates using compressed headers using a new message.
 
-==== `headers2` -- Receiving compact headers
+==== `headers2` -- Receiving compressed headers
 
 A `headers2` message is returned in response to `getheaders2` or at new header announcement following a `sendheaders2` request. It contains both `length` and `headers` fields. The `headers` field contains a variable length vector of `block_header2`:
 
