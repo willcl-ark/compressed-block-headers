@@ -2,7 +2,7 @@ from io import BytesIO
 from time import perf_counter
 import requests
 from random import randint
-from header_codec.codec import compress_headers, decompress_headers, HEADER_LEN, hash_header
+from header_codec.codec import compress_headers, decompress_headers, HEADER_LEN, hash_header, CompressionError
 
 
 REST_URL = "http://127.0.0.1:8332"
@@ -34,66 +34,55 @@ def get_headers(blockhash="", count=2000):
     return header_response.content
 
 
-def test_full_blocks():
+def test_random_block():
     """
-    Runs a test of the full header chain in both compression and decompression in blocks
-    of 2000 headers per request.
+    Tests compression and decompression by requesting a single block (max 2000 headers)
+    from a random position in the chain.
     """
-    # Init with genesis block hash
-    best_hash = bytes(reversed(GENESIS_HASH)).hex()
+    cin = BytesIO()
     cout = BytesIO()
     din = BytesIO()
     dout = BytesIO()
-    total = 0
+    print(f"starting test...")
+    cin.write(get_headers(count=2000))
+    uncomp_size = cin.tell()
+    count = int((uncomp_size / 80))
+    cin.seek(0)
+
+    # Save the first uncompressed header for later
+    first_header = cin.read(HEADER_LEN)
+    cin.seek(0)
+
+    # Test compression
+    print("starting compression...")
     t1 = perf_counter()
-    print(f"Started test at {t1}")
-
-    while True:
-        # Fetch headers from the node
-        headers = get_headers(blockhash=best_hash, count=2000)
-        new_best_hash = bytes(reversed(hash_header(headers[-80:]))).hex()
-        if best_hash == new_best_hash:
-            print(f"Reached best hash known to node: {best_hash}")
-            break
-        else:
-            best_hash = new_best_hash
-            # -1 otherwise we count the "from" header twice
-            total += int((len(headers) / 80)) - 1
-
-        # Init compression with the fetched headers
-        cin = BytesIO(headers)
-        first_header = cin.read(HEADER_LEN)
-        cin.seek(0)
-
-        # Test compression
-        compress_headers(cin, cout)
-
-        # Use the output of the compression as the input to the decompression
-        cout.seek(0)
-        din.write(cout.read())
-        # Load the first header into the stream so we can compare the result easier later
-        dout.write(first_header)
-
-        # Test decompression
-        decompress_headers(din, dout, first_header)
-
-        # Reset everything
-        cin.seek(0)
-        cin.truncate()
-        cout.seek(0)
-        cout.truncate()
-        din.seek(0)
-        din.truncate()
-        dout.seek(0)
-        dout.truncate()
-
+    if not compress_headers(cin, cout):
+        raise CompressionError("during compress")
     t2 = perf_counter()
-    print(f"Ended test at {t2}")
-    print(f"Total time: {t2-t1} s")
-    print(f"Compressed and decompressed {total} headers in {round(t2-t1, 2)} s")
+    print(f"finished compression in {t2-t1} seconds")
+    comp_size = cout.tell()
+
+    # Rewind so we can use output of compression as input to decompression
+    cout.seek(0)
+
+    # Load the first header into output stream so we can compare the result easier later
+    dout.write(first_header)
+
+    # Test decompression
+    print("starting decompression...")
+    t3 = perf_counter()
+    if not decompress_headers(cout, dout, first_header):
+        CompressionError("during decompress")
+    t4 = perf_counter()
+    print(f"finished decompression in {t4-t3} seconds")
+
+    print(f"compressed and decompressed {count} headers in {round(t4-t1, 2)} seconds")
+    print(f"uncompressed size: {uncomp_size} B")
+    print(f"compressed size:   {comp_size} B")
+    print(f"compression saved: {uncomp_size - comp_size} B")
 
 
-def test_full_single_stream():
+def test_full_sync():
     """
     Runs a test of the full header chain in both compression and decompression by
     loading the entire header chain into RAM and performing a single compression and
@@ -122,21 +111,21 @@ def test_full_single_stream():
 
     uncompressed_size = cin.tell()
 
-    print(f"Reached best hash known to node")
-    print(f"Blockhash: {best_hash}")
-    print(f"Height:    {total}")
-    print(f"Uncompressed size: {uncompressed_size:,} B")
+    print(f"reached best hash known to node")
+    print(f"blockhash: {best_hash}")
+    print(f"height:    {total}")
+    print(f"uncompressed size: {uncompressed_size:,} B")
     cin.seek(0)
 
     # Start compression
     cin.seek(0)
     t1 = perf_counter()
-    print(f"Started compression at {t1}")
+    print(f"started compression at {t1}")
     compress_headers(cin, cout)
     t2 = perf_counter()
-    print(f"Finished compression at {t2}")
+    print(f"finished compression at {t2}")
     compressed_size = cout.tell()
-    print(f"Compressed size: {compressed_size:,} B")
+    print(f"compressed size: {compressed_size:,} B")
 
     # Use the output of the compression as the input to the decompression
     cout.seek(0)
@@ -145,10 +134,10 @@ def test_full_single_stream():
 
     # Test decompression
     t3 = perf_counter()
-    print(f"Started decompression at {t3}")
+    print(f"started decompression at {t3}")
     decompress_headers(cout, dout, GENESIS_HEADER)
     t4 = perf_counter()
-    print(f"Finished decompression at {t4}")
+    print(f"finished decompression at {t4}")
 
     # Reset everything
     cin.seek(0)
@@ -160,12 +149,12 @@ def test_full_single_stream():
 
     assert cin.read() == dout.read()
 
-    print(f"Total time including fetching headers: {t4-t0} s")
+    print(f"total time including fetching headers: {t4-t0} s")
     print(
-        f"Compressed and decompressed {total} headers in {round((t2-t1) + (t4-t3), 2)} s"
+        f"compressed and decompressed {total} headers in {round((t2-t1) + (t4-t3), 2)} s"
     )
-    print(f"Compression saved {uncompressed_size - compressed_size:,} Bytes in total")
+    print(f"compression saved {uncompressed_size - compressed_size:,} Bytes in total")
 
 
-# test_full_blocks()
-test_full_single_stream()
+test_random_block()
+# test_full_sync()
