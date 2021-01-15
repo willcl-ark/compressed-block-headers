@@ -12,8 +12,10 @@ GENESIS_HEADER = b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 GENESIS_HASH = hash_header(GENESIS_HEADER)
 
 
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("test_codec")
 logger.setLevel(logging.DEBUG)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
 def bitcoin_rest_request(request: str) -> bytes:
     response = requests.get(request)
