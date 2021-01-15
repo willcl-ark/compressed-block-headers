@@ -4,10 +4,12 @@ Spec: https://github.com/willcl-ark/compressed-block-headers/blob/v1.0/compresse
 
 Bitfield:
 --------------------
-Bit                 Set                                 Unset
-0 version:          same as previous (0 byte field).    new 4 byte version to follow
-1
-2
+Bit(s)              Set                                 Unset
+-----
+0                   0 - 7 indicates same as previous 'n'
+1 version:          versions.
+2                   8 indicates new distinct version
+-----
 3 prev_block_hash:  omitted (0 byte field).             new 4 byte hash to follow
 4 timestamp:        2 byte offset from previous.        new 4 byte timestamp to follow
 5 nBits:            same as previous (0 byte field).    new 4 byte field to follow
@@ -28,20 +30,21 @@ nonce           76:80
 import hashlib
 import logging
 import struct
+from collections import deque
 from io import BytesIO
 
 
 HEADER_LEN = 80
-logging.basicConfig(level=logging.ERROR)
-logger = logging.getLogger("codec")
+logger = logging.getLogger("header_codec")
 
 
 # Bitfield masks
-mask_version = 0b10000000
-mask_prev_block_hash = 0b00010000
-mask_time = 0b00001000
-mask_nBits = 0b00000100
-mask_end = 0b00000010
+MASK_VERSION         = 0b111 << 5
+MASK_PREV_BLOCK_HASH = 0b1   << 4
+MASK_TIME            = 0b1   << 3
+MASK_NBITS           = 0b1   << 2
+MASK_END             = 0b1   << 1
+NEW_DISTINCT_VERSION = 7
 
 
 class CompressionError(Exception):
@@ -53,6 +56,10 @@ def hash_header(header: bytes):
 
 
 def _compress(in_stream: BytesIO, out_stream: BytesIO):
+    # Init the previous versions deque
+    prev_versions = deque(maxlen=7)
+    first = True
+
     while True:
         in_pos_start = in_stream.tell()
         prev_header = in_stream.read(HEADER_LEN)
@@ -61,32 +68,43 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         in_stream.seek(in_pos_start + HEADER_LEN)
 
         if not next_header:
-            # Rewind the stream and set the sequence end bit of the bitfield
-            # Only done once per sequence
-            end = out_stream.tell()
+            # Return to the beginning of last header
             out_stream.seek(out_pos_start)
-            bitfield = int.from_bytes(out_stream.read(1), "little") ^ mask_end
+            # Read the bitfield and set sequence_end bit
+            bitfield = int.from_bytes(out_stream.read(1), "little") ^ MASK_END
             out_stream.seek(out_pos_start)
+            # Write the updated bitfield
             out_stream.write(bitfield.to_bytes(1, "little"))
-            out_stream.seek(end)
+            # Seek to end of stream
+            out_stream.seek(0, 2)
             break
 
         # Mark where we start so we can rewind when we set the sequence_end bit
         out_pos_start = out_stream.tell()
-        # Advance out_stream 1 byte for bitfield after we've configured it
+        # Advance out_stream 1 byte to allow for bitfield to be inserted later
         out_stream.seek(out_pos_start + 1)
 
-        # Init empty bitfield
+        # Initialise an empty bitfield
         bitfield = 0b00000000
 
+        # On first iteration we add prev_header to the index before beginning
+        if first:
+            prev_versions.appendleft(prev_header[0:4])
+            first = False
+
         # Version
-        if prev_header[0:4] == next_header[0:4]:
-            bitfield = bitfield ^ mask_version
+        if next_header[0:4] in prev_versions:
+            # Add the index of the previous version to the bitfield
+            bitfield = bitfield ^ (prev_versions.index(next_header[0:4]) << 5)
         else:
+            prev_versions.appendleft(next_header[0:4])
+            # Update the bitfield to indicate new distinct version
+            bitfield = bitfield ^ (NEW_DISTINCT_VERSION << 5)
+            # logger.debug(f"updated deque: {[v for v in prev_versions]}")
             out_stream.write(next_header[0:4])
 
         # Prev Block Hash always omitted
-        bitfield = bitfield ^ mask_prev_block_hash
+        bitfield = bitfield ^ MASK_PREV_BLOCK_HASH
 
         # Merkle_root
         out_stream.write(next_header[36:68])
@@ -97,7 +115,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         time_offset = next_time - prev_time
         # If we can fit it as a 2 byte offset, do that
         if -32768 < time_offset < 32767:
-            bitfield = bitfield ^ mask_time
+            bitfield = bitfield ^ MASK_TIME
             out_stream.write(struct.pack("<h", time_offset))
         # Else copy the full 4 bytes
         else:
@@ -106,7 +124,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         # nBits
         if prev_header[72:76] == next_header[72:76]:
             # If the same, only set the bitfield
-            bitfield = bitfield ^ mask_nBits
+            bitfield = bitfield ^ MASK_NBITS
         else:
             # Else write the new 4 byte nBits
             out_stream.write(next_header[72:76])
@@ -147,6 +165,10 @@ def compress_headers(in_stream: BytesIO, out_stream: BytesIO) -> bool:
 def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
     first = True
     end = False
+    # Init the previous version deque
+    prev_versions = deque(maxlen=7)
+    # Add prev_header to the dequeue
+    prev_versions.appendleft(prev_header[0:4])
 
     while not end:
         # On the first iteration only prev_header is taken from function parameter
@@ -163,11 +185,14 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
         bitfield = int.from_bytes(in_stream.read(1), "little")
 
         # Version
-        if bitfield & mask_version:
-            out_stream.write(prev_header.read(4))
-            prev_header.seek(0)
+        v_index = bitfield >> 5
+        if v_index == NEW_DISTINCT_VERSION:
+            # Version not in previous 7 distinct versions
+            version = in_stream.read(4)
+            prev_versions.appendleft(version)
+            out_stream.write(version)
         else:
-            out_stream.write(in_stream.read(4))
+            out_stream.write(prev_versions[v_index])
 
         # Prev_block_hash
         out_stream.write(hash_header(prev_header.read(HEADER_LEN)))
@@ -177,7 +202,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
         out_stream.write(in_stream.read(32))
 
         # Time
-        if bitfield & mask_time:
+        if bitfield & MASK_TIME:
             (time_offset,) = struct.unpack("<h", in_stream.read(2))
             prev_header.seek(68)
             (time_prev,) = struct.unpack("I", prev_header.read(4))
@@ -187,7 +212,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
             out_stream.write(in_stream.read(4))
 
         # nBits
-        if bitfield & mask_nBits:
+        if bitfield & MASK_NBITS:
             prev_header.seek(72)
             out_stream.write(prev_header.read(4))
             prev_header.seek(0)
@@ -198,7 +223,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
         out_stream.write(in_stream.read(4))
 
         # Check if this is final header
-        if bitfield & mask_end:
+        if bitfield & MASK_END:
             end = True
 
 
