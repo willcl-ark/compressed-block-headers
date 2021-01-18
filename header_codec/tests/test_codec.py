@@ -1,5 +1,9 @@
+import argparse
 import logging
+import sys
+from enum import Enum
 from io import BytesIO
+from pathlib import Path
 from random import randint
 from time import perf_counter
 
@@ -7,167 +11,175 @@ import requests
 from header_codec.codec import compress_headers, CompressionError, decompress_headers, \
     hash_header, HEADER_LEN
 
-REST_URL = "http://127.0.0.1:8332"
-GENESIS_HEADER = b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00;\xa3\xed\xfdz{\x12\xb2z\xc7,>gv\x8fa\x7f\xc8\x1b\xc3\x88\x8aQ2:\x9f\xb8\xaaK\x1e^J)\xab_I\xff\xff\x00\x1d\x1d\xac+|"
-GENESIS_HASH = hash_header(GENESIS_HEADER)
-
-
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("test_codec")
 logger.setLevel(logging.DEBUG)
 logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
+REST_URL = "http://127.0.0.1:8332"
+GENESIS_HEADER = b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00;\xa3\xed\xfdz{\x12\xb2z\xc7,>gv\x8fa\x7f\xc8\x1b\xc3\x88\x8aQ2:\x9f\xb8\xaaK\x1e^J)\xab_I\xff\xff\x00\x1d\x1d\xac+|"
+
+
+class Source(Enum):
+    FILE = 1
+    REST =2
+
+
+def header_hex(header: bytes):
+    return bytes(reversed(hash_header(header))).hex()
+
+
 def bitcoin_rest_request(request: str) -> bytes:
     response = requests.get(request)
     if not response.status_code == 200:
         raise requests.RequestException(
-            f"Could not connect to bitcoind REST API at {REST_URL}\n/"
-            f"Make sure bitcoind is running with -rest=1"
+            f"could not connect to bitcoind REST API at {REST_URL}\n/"
+            f"make sure bitcoind is running with -rest=1"
         )
     return response
 
 
-def get_headers(blockhash="", count=2000):
-    if not blockhash:
-        height = randint(0, 421074)
-        blockhash_response = bitcoin_rest_request(
-            f"{REST_URL}/rest/blockhashbyheight/{height}.hex"
-        )
-        blockhash = blockhash_response.text.strip()
-    if not count:
-        count = randint(100, 2000)
-
+def get_header_block(blockhash, count=2000) -> bytes:
     header_response = bitcoin_rest_request(
         f"{REST_URL}/rest/headers/{count}/{blockhash}.bin"
     )
     return header_response.content
 
 
-def test_random_block():
+def read_headers_file(file: Path) -> bytes:
+    with open(file, "rb") as f:
+        return f.read()
+
+
+def get_headers(blockhash="", count=2000, height=0, to_tip=True) -> BytesIO:
+    if SOURCE == Source.FILE:
+        # If a height is provided, open the file this many headers in
+        if height:
+            start = height * HEADER_LEN
+            if to_tip:
+                return BytesIO(read_headers_file(args.file)[start:])
+            end = start + (HEADER_LEN * count)
+            return BytesIO(read_headers_file(args.file)[start:end])
+        return BytesIO(read_headers_file(args.file))
+    else:
+        headers = BytesIO()
+        if not blockhash:
+            # Start from genesis hash
+            best_hash = header_hex(GENESIS_HEADER)
+        else:
+            best_hash = blockhash
+
+        if to_tip:
+            while True:
+                # Drop first header as we already have it
+                header_block = get_header_block(blockhash=best_hash, count=count)[80:]
+                headers.write(header_block)
+                headers.seek(headers.tell() - HEADER_LEN)
+                new_best_hash = header_hex(headers.read(HEADER_LEN))
+                if best_hash == new_best_hash:
+                    break
+                best_hash = new_best_hash
+        else:
+            # Drop first header as we already have it
+            header_block = get_header_block(blockhash=best_hash, count=count)[80:]
+            headers.write(header_block)
+        headers.seek(0)
+        return headers
+
+
+def test_codec(partial=False):
     """
-    Tests compression and decompression by requesting a single block (max 2000 headers)
-    from a random position in the chain.
+    Run a test of compression and decompression.
+    Asserting the input and output streams (after both operations) are identical.
     """
-    logger.info(f"starting test_random_block")
-    cin = BytesIO()
-    cout = BytesIO()
-    din = BytesIO()
-    dout = BytesIO()
-    cin.write(get_headers(count=2000))
-    uncomp_size = cin.tell()
-    count = int((uncomp_size / 80))
-    logger.debug(f"got {count} headers from bitcoind")
-    cin.seek(0)
+    logger.info(f"starting test_codec {partial=}")
 
-    # Save the first uncompressed header for later
-    first_header = cin.read(HEADER_LEN)
-    cin.seek(0)
+    if partial:
+        height = randint(0, 666600)
+        if SOURCE == Source.REST:
+            blockhash_response = bitcoin_rest_request(f"{REST_URL}/rest/blockhashbyheight/{height}.hex")
+            blockhash = blockhash_response.text.strip()
+            logger.info(f"testing 2000 headers from {height=} {blockhash=}")
+            cin = get_headers(blockhash, to_tip=False)
+        else:
+            cin = get_headers(height=height, to_tip=False)
+            blockhash = header_hex(cin.read(80))
+            cin.seek(0)
+    else:
+        cin = get_headers()
 
-    # Test compression
-    logger.debug("starting compression")
-    t1 = perf_counter()
-    if not compress_headers(cin, cout):
-        raise CompressionError("during test_random_block::compress")
-    t2 = perf_counter()
-    logger.debug(f"finished compression in {round(t2 - t1, 6)} seconds")
-    comp_size = cout.tell()
-
-    # Rewind so we can use output of compression as input to decompression
-    cout.seek(0)
-
-    # Load the first header into output stream so we can compare the result easier later
-    dout.write(first_header)
-
-    # Test decompression
-    logger.debug("starting decompression...")
-    t3 = perf_counter()
-    if not decompress_headers(cout, dout, first_header):
-        CompressionError("during decompress")
-    t4 = perf_counter()
-    logger.debug(f"finished decompression in {round(t4 - t3, 6)} seconds")
-
-    logger.info(f"compressed and decompressed {count} headers in {round(t4 - t1, 2)} seconds")
-    logger.info(f"uncompressed size: {uncomp_size:,} B")
-    logger.info(f"compressed size:   {comp_size:,} B")
-    logger.info(f"compression saved: {uncomp_size - comp_size:,} Bytes, or {round((1 - (comp_size/uncomp_size)) * 100, 2)} %")
-
-
-def test_full_sync():
-    """
-    Runs a test of the full header chain in both compression and decompression by
-    loading the entire header chain into RAM and performing a single compression and
-    decompression on the stream, asserting the input and output streams (after  both
-    operations) are identical.
-    """
-    logger.info(f"starting test_full_sync")
-    # Init with genesis block hash
-    best_hash = bytes(reversed(GENESIS_HASH)).hex()
-    cin = BytesIO()
-    cout = BytesIO()
-    dout = BytesIO()
-    total = 0
-    t0 = perf_counter()
-
-    while True:
-        # Fetch all headers from the node
-        headers = get_headers(blockhash=best_hash, count=2000)
-        new_best_hash = bytes(reversed(hash_header(headers[-80:]))).hex()
-        if best_hash == new_best_hash:
-            break
-
-        best_hash = new_best_hash
-
-        cin.write(headers)
-        total = int(cin.tell() / 80)
-
+    # Calculate number of headers in test
+    cin.seek(0, 2)
+    num_headers = int(cin.tell() / HEADER_LEN)
+    logger.debug(f"num headers: {num_headers}")
     uncompressed_size = cin.tell()
+    logger.debug(f"uncompressed header chain size: {uncompressed_size:,} B")
 
-    logger.debug(f"reached chaintip of node:")
-    logger.debug(f"blockhash:         {best_hash}")
-    logger.debug(f"height:            {total}")
-    logger.debug(f"header chain size: {uncompressed_size:,} B")
+    # Save the hex hash of our best header
+    cin.seek(0, 2)
+    cin.seek(cin.tell() - HEADER_LEN)
+    best_hash = header_hex(cin.read(HEADER_LEN))
+    logger.debug(f"best hash: {best_hash}")
+
+    # Get the first header
     cin.seek(0)
+    first_header = cin.read(HEADER_LEN)
+
+    # Init io streams
+    cin.seek(0)
+    cout = BytesIO()
+    dout = BytesIO()
 
     # Start compression
-    cin.seek(0)
-    t1 = perf_counter()
-    logger.debug(f"started compression at {round(t1, 6)}")
+    logger.debug(f"starting compression")
+    time_start_compress = perf_counter()
     compress_headers(cin, cout)
-    t2 = perf_counter()
-    logger.debug(f"finished compression at {round(t2, 6)}")
+    time_end_compress = perf_counter()
+    logger.debug(f"finished compression in {round(time_end_compress - time_start_compress, 6)} seconds")
     compressed_size = cout.tell()
     logger.debug(f"compressed size: {compressed_size:,} B")
 
-    # Use the output of the compression as the input to the decompression
-    cout.seek(0)
     # Load the first header into the stream so we can compare the result easier later
-    dout.write(GENESIS_HEADER)
+    cout.seek(0)
+    dout.write(first_header)
 
     # Test decompression
-    t3 = perf_counter()
-    logger.debug(f"started decompression at {round(t3, 6)}")
-    decompress_headers(cout, dout, GENESIS_HEADER)
+    logger.debug(f"starting decompression")
+    # Use the output of the compression as the input to the decompression
     t4 = perf_counter()
-    logger.debug(f"finished decompression at {round(t4, 6)}")
+    decompress_headers(cout, dout, first_header)
+    t5 = perf_counter()
+    logger.debug(f"finished decompression in {round(t5 - t4, 6)} seconds")
 
     # Reset everything
     cin.seek(0)
-    cin.truncate()
     cout.seek(0)
-    cout.truncate()
     dout.seek(0)
-    dout.truncate()
 
     if not cin.read() == dout.read():
         logger.error(f"uncompressed input does not match decompressed output")
         return
 
-    logger.debug(f"total time including fetching headers: {round(t4 - t0, 6)} s")
-    logger.info(
-        f"compressed and decompressed {total} headers in {round((t2 - t1) + (t4 - t3), 2)} s"
-    )
+    logger.info(f"compressed and decompressed {num_headers} headers in {round((time_end_compress - time_start_compress) + (t5 - t4), 2)} s")
     logger.info(f"compression saved {uncompressed_size - compressed_size:,} Bytes in total")
 
 
-test_random_block()
-test_full_sync()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Test block header compression and decompression')
+    parser.add_argument('-f', '--file', type=Path, help='path to a binary file containing block headers')
+    args = parser.parse_args()
+    if args.file:
+        if args.file.exists():
+            logger.info(f"using headers from {args.file}")
+            SOURCE = Source.FILE
+        else:
+            logger.info(f"path {args.file} does not exist")
+            sys.exit()
+    else:
+        SOURCE = Source.REST
+        logger.info(f"using headers from bitcoind REST API")
+
+    # Test 2000 headers from a random position in the chain
+    test_codec(partial=True)
+    # Test the entire chain
+    test_codec()
