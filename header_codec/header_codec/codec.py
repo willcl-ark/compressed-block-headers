@@ -27,6 +27,7 @@ nonce           76:80
 """
 
 
+import ctypes
 import hashlib
 import logging
 import struct
@@ -45,6 +46,10 @@ MASK_TIME            = 0b1   << 3
 MASK_NBITS           = 0b1   << 2
 MASK_END             = 0b1   << 1
 NEW_DISTINCT_VERSION = 7
+
+# Min and Max int values for our 2 byte time offset
+MAX_INT = int((ctypes.c_uint16(-1).value - 1) / 2)
+MIN_INT = - int((ctypes.c_uint16(-1).value + 1) / 2)
 
 
 class CompressionError(Exception):
@@ -114,7 +119,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         (next_time,) = struct.unpack("I", next_header[68:72])
         time_offset = next_time - prev_time
         # If we can fit it as a 2 byte offset, do that
-        if -32768 < time_offset < 32767:
+        if MIN_INT <= time_offset <= MAX_INT:
             bitfield = bitfield ^ MASK_TIME
             out_stream.write(struct.pack("<h", time_offset))
         # Else copy the full 4 bytes
