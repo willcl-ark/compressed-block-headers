@@ -30,11 +30,17 @@ import logging
 import struct
 from io import BytesIO
 
-from bitarray import bitarray
 
 HEADER_LEN = 80
 logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger("codec")
+
+
+# Bitfield masks
+mask_version         = 0b10000000
+mask_prev_block_hash = 0b00010000
+mask_time            = 0b00001000
+mask_nBits           = 0b00000100
 
 
 class CompressionError(Exception):
@@ -59,18 +65,18 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
             break
 
         # Init empty bitfield
-        bitfield = bitarray("00000000", endian="little")
+        bitfield = 0b00000000
         # Advance out_stream a byte to leave room for our bitfield after we've set it
         out_stream.seek(out_pos_start + 1)
 
         # Version
         if prev_header[0:4] == next_header[0:4]:
-            bitfield[0] = 1
+            bitfield = bitfield ^ mask_version
         else:
             out_stream.write(next_header[0:4])
 
-        # Prev Block Hash omitted
-        ...
+        # Prev Block Hash always omitted
+        bitfield = bitfield ^ mask_prev_block_hash
 
         # Merkle_root
         out_stream.write(next_header[36:68])
@@ -81,7 +87,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         time_offset = next_time - prev_time
         # If we can fit it as a 2 byte offset, do that
         if -32768 < time_offset < 32767:
-            bitfield[4] = 1
+            bitfield = bitfield ^ mask_time
             out_stream.write(struct.pack("<h", time_offset))
         # Else copy the full 4 bytes
         else:
@@ -90,7 +96,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
         # nBits
         if prev_header[72:76] == next_header[72:76]:
             # If the same, only set the bitfield
-            bitfield[5] = 1
+            bitfield = bitfield ^ mask_nBits
         else:
             # Else write the new 4 byte nBits
             out_stream.write(next_header[72:76])
@@ -101,7 +107,7 @@ def _compress(in_stream: BytesIO, out_stream: BytesIO):
 
         # Rewind to write the 1 byte bitfield
         out_stream.seek(out_pos_start)
-        out_stream.write(bitfield.tobytes())
+        out_stream.write(bitfield.to_bytes(1, "little"))
 
         # Seek to the end ready for the next header to be appended
         out_stream.seek(out_pos_end)
@@ -142,15 +148,14 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
             prev_header = BytesIO(out_stream.read(HEADER_LEN))
 
         # Bitfield
-        bitfield = bitarray(endian="little")
-        b = in_stream.read(1)
-        if b == b"":
+        _b = in_stream.read(1)
+        if _b == b"":
             # EOF reached
             break
-        bitfield.frombytes(b)
+        bitfield = int.from_bytes(_b, "little")
 
         # Version
-        if bitfield[0]:
+        if bitfield & mask_version:
             out_stream.write(prev_header.read(4))
             prev_header.seek(0)
         else:
@@ -164,7 +169,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
         out_stream.write(in_stream.read(32))
 
         # Time
-        if bitfield[4]:
+        if bitfield & mask_time:
             (time_offset,) = struct.unpack("<h", in_stream.read(2))
             prev_header.seek(68)
             (time_prev,) = struct.unpack("I", prev_header.read(4))
@@ -174,7 +179,7 @@ def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
             out_stream.write(in_stream.read(4))
 
         # nBits
-        if bitfield[5]:
+        if bitfield & mask_nBits:
             prev_header.seek(72)
             out_stream.write(prev_header.read(4))
             prev_header.seek(0)
