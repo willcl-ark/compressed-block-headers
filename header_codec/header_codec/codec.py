@@ -6,14 +6,14 @@ Bitfield:
 --------------------
 Bit(s)              Set                                 Unset
 -----
-0                   0 - 7 indicates same as previous 'n'
-1 version:          versions.
-2                   8 indicates new distinct version
+0                   0 - 6 indicates same as previous
+1 version:          n'th version.
+2                   7 indicates new distinct version
 -----
-3 prev_block_hash:  omitted (0 byte field).             new 4 byte hash to follow
+3 prev_block_hash:  32 bytes included.                  Omitted (0 bytes)
 4 timestamp:        2 byte offset from previous.        new 4 byte timestamp to follow
 5 nBits:            same as previous (0 byte field).    new 4 byte field to follow
-6 sequence_end:     last header in sequence.            more headers to follow
+6
 7
 
 Uncompressed header structure:
@@ -26,19 +26,19 @@ nBits           72:76
 nonce           76:80
 """
 
-
 import ctypes
 import hashlib
 import logging
 import struct
 from collections import deque
+from dataclasses import dataclass
 from io import BytesIO
-
+from types import SimpleNamespace
 
 HEADER_LEN = 80
 logger = logging.getLogger("header_codec")
 
-
+# fmt: off
 # Bitfield masks
 MASK_VERSION         = 0b111 << 5
 MASK_PREV_BLOCK_HASH = 0b1   << 4
@@ -46,212 +46,234 @@ MASK_TIME            = 0b1   << 3
 MASK_NBITS           = 0b1   << 2
 MASK_END             = 0b1   << 1
 NEW_DISTINCT_VERSION = 7
+# fmt: on
 
 # Min and Max int values for our 2 byte time offset
 MAX_INT = int((ctypes.c_uint16(-1).value - 1) / 2)
-MIN_INT = - int((ctypes.c_uint16(-1).value + 1) / 2)
+MIN_INT = -int((ctypes.c_uint16(-1).value + 1) / 2)
 
 
 class CompressionError(Exception):
     pass
 
 
-def hash_header(header: bytes):
-    return hashlib.sha256(hashlib.sha256(header).digest()).digest()
+@dataclass
+class Header:
+    __slots__ = ["version", "prev_block_hash", "merkle_root", "time", "nBits", "nonce"]
+    version: bytes
+    prev_block_hash: bytes
+    merkle_root: bytes
+    time: bytes
+    nBits: bytes
+    nonce: bytes
+
+    @classmethod
+    def from_bytes(cls, header):
+        if not len(header) == 80:
+            raise ValueError(f"Header length {len(header)} cannot be decoded")
+        return cls(
+            header[0:4],
+            header[4:36],
+            header[36:68],
+            header[68:72],
+            header[72:76],
+            header[76:80],
+        )
+
+    @property
+    def hash(self):
+        return hashlib.sha256(hashlib.sha256(self.to_bytes).digest()).digest()
+
+    @property
+    def to_bytes(self):
+        return b"".join(
+            [
+                self.version,
+                self.prev_block_hash,
+                self.merkle_root,
+                self.time,
+                self.nBits,
+                self.nonce,
+            ]
+        )
 
 
-def _compress(in_stream: BytesIO, out_stream: BytesIO):
-    # Init the previous versions deque
-    prev_versions = deque(maxlen=7)
-    first = True
+@dataclass
+class CompressorState:
+    prev_versions: deque = deque(maxlen=7)
+    prev_header = False  # Will mutate to Header after first cycle
 
-    while True:
-        in_pos_start = in_stream.tell()
-        prev_header = in_stream.read(HEADER_LEN)
-        next_header = in_stream.read(HEADER_LEN)
-        # Rewind for the next iteration to read prev_header from the right place
-        in_stream.seek(in_pos_start + HEADER_LEN)
 
-        if not next_header:
-            # Return to the beginning of last header
-            out_stream.seek(out_pos_start)
-            # Read the bitfield and set sequence_end bit
-            bitfield = int.from_bytes(out_stream.read(1), "little") ^ MASK_END
-            out_stream.seek(out_pos_start)
-            # Write the updated bitfield
-            out_stream.write(bitfield.to_bytes(1, "little"))
-            # Seek to end of stream
-            out_stream.seek(0, 2)
-            break
+@dataclass
+class Codec:
+    """
+    A stateful codec which, for the life of the object, will store previous header state
+    in order to enable header compression for a single peer.
+    """
 
-        # Mark where we start so we can rewind when we set the sequence_end bit
-        out_pos_start = out_stream.tell()
-        # Advance out_stream 1 byte to allow for bitfield to be inserted later
-        out_stream.seek(out_pos_start + 1)
+    compressor = CompressorState()
+    decompressor = CompressorState()
 
-        # Initialise an empty bitfield
+    def _compress(self, header: bytes) -> bytes:
+        # Initialise fields
         bitfield = 0b00000000
-
-        # On first iteration we add prev_header to the index before beginning
-        if first:
-            prev_versions.appendleft(prev_header[0:4])
-            first = False
+        version = b""
+        prev_block_hash = b""
+        merkle_root = b""
+        time = b""
+        nBits = b""
+        nonce = b""
+        header = Header.from_bytes(header)
 
         # Version
-        if next_header[0:4] in prev_versions:
-            # Add the index of the previous version to the bitfield
-            bitfield = bitfield ^ (prev_versions.index(next_header[0:4]) << 5)
+        if header.version in self.compressor.prev_versions:
+            bitfield = bitfield ^ (
+                self.compressor.prev_versions.index(header.version) << 5
+            )
         else:
-            prev_versions.appendleft(next_header[0:4])
-            # Update the bitfield to indicate new distinct version
+            self.compressor.prev_versions.appendleft(header.version)
             bitfield = bitfield ^ (NEW_DISTINCT_VERSION << 5)
-            # logger.debug(f"updated deque: {[v for v in prev_versions]}")
-            out_stream.write(next_header[0:4])
+            version = header.version
 
-        # Prev Block Hash always omitted
-        bitfield = bitfield ^ MASK_PREV_BLOCK_HASH
+        # Prev Block Hash
+        # We send the first of each session
+        if not self.compressor.prev_header:
+            prev_block_hash = header.prev_block_hash
+            bitfield = bitfield ^ MASK_PREV_BLOCK_HASH
+        # Otherwise always omit
+        else:
+            ...
 
-        # Merkle_root
-        out_stream.write(next_header[36:68])
+        # Merkle_root always included
+        merkle_root = header.merkle_root
 
         # Time
-        (prev_time,) = struct.unpack("I", prev_header[68:72])
-        (next_time,) = struct.unpack("I", next_header[68:72])
-        time_offset = next_time - prev_time
-        # If we can fit it as a 2 byte offset, do that
-        if MIN_INT <= time_offset <= MAX_INT:
-            bitfield = bitfield ^ MASK_TIME
-            out_stream.write(struct.pack("<h", time_offset))
-        # Else copy the full 4 bytes
+        if not self.compressor.prev_header:
+            time = header.time
         else:
-            out_stream.write(next_header[68:72])
+            (prev_time,) = struct.unpack("I", self.compressor.prev_header.time)
+            (header_time,) = struct.unpack("I", header.time)
+            time_offset = header_time - prev_time
+            # If we can fit it as a 2 byte offset, do that
+            if MIN_INT <= time_offset <= MAX_INT:
+                bitfield = bitfield ^ MASK_TIME
+                time = struct.pack("<h", time_offset)
+            # Else copy the full 4 bytes
+            else:
+                time = header.time
 
         # nBits
-        if prev_header[72:76] == next_header[72:76]:
+        if not self.compressor.prev_header:
+            nBits = header.nBits
+        elif header.nBits == self.compressor.prev_header.nBits:
             # If the same, only set the bitfield
             bitfield = bitfield ^ MASK_NBITS
         else:
             # Else write the new 4 byte nBits
-            out_stream.write(next_header[72:76])
+            nBits = header.nBits
 
         # Nonce always requires full 4 bytes
-        out_stream.write(next_header[76:80])
-        out_pos_end = out_stream.tell()
+        nonce = header.nonce
 
-        # Rewind to write the 1 byte bitfield
-        out_stream.seek(out_pos_start)
-        out_stream.write(bitfield.to_bytes(1, "little"))
+        # Write the final bitfield to 1 byte
+        bitfield = bitfield.to_bytes(1, "little")
 
-        # Seek to the end ready for the next header to be appended
-        out_stream.seek(out_pos_end)
+        # Set compressor's prev_header to header
+        self.compressor.prev_header = header
 
+        # Return compressed header with prepended bitfield
+        return b"".join(
+            [
+                bitfield,
+                version,
+                prev_block_hash,
+                merkle_root,
+                time,
+                nBits,
+                nonce,
+            ]
+        )
 
-def compress_headers(in_stream: BytesIO, out_stream: BytesIO) -> bool:
-    """
-    Compress takes a stream of headers of length (start ... end)
-    It compresses and returns (start + 1 ... end) into a return stream
+    def compress_header(self, header: bytes) -> bytes:
+        """
+        Compress takes a header and returns a compressed version
 
-    :return bool indicating success
-    """
-    try:
-        _compress(in_stream, out_stream)
-    # Likely an error from stream reading or writing
-    except OSError as e:
-        logger.exception(e)
-        return False
-    # An error with packing or unpacking with struct
-    except struct.error as e:
-        logger.exception(e)
-        return False
+        :return bytes compressed header
+        """
+        try:
+            compressed_header = self._compress(header)
+        # Likely an error from stream reading or writing
+        except OSError as e:
+            logger.exception(e)
+        # An error with packing or unpacking with struct
+        except struct.error as e:
+            logger.exception(e)
+        return compressed_header
 
-    return True
-
-
-def _decompress(in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes):
-    first = True
-    end = False
-    # Init the previous version deque
-    prev_versions = deque(maxlen=7)
-    # Add prev_header to the dequeue
-    prev_versions.appendleft(prev_header[0:4])
-
-    while not end:
-        # On the first iteration only prev_header is taken from function parameter
-        if first:
-            prev_header = BytesIO(prev_header)
-            first = False
-        # Else we rewind the out stream and extract it from there
-        else:
-            out_pos_start = out_stream.tell()
-            out_stream.seek(out_pos_start - 80)
-            prev_header = BytesIO(out_stream.read(HEADER_LEN))
-
-        # Bitfield
-        bitfield = int.from_bytes(in_stream.read(1), "little")
+    def _decompress(self, header: bytes) -> bytes:
+        header = BytesIO(header)
+        bitfield = int.from_bytes(header.read(1), "little")
+        version = b""
+        prev_block_hash = b""
+        merkle_root = b""
+        time = b""
+        nBits = b""
+        nonce = b""
 
         # Version
         v_index = bitfield >> 5
         if v_index == NEW_DISTINCT_VERSION:
             # Version not in previous 7 distinct versions
-            version = in_stream.read(4)
-            prev_versions.appendleft(version)
-            out_stream.write(version)
+            version = header.read(4)
+            self.decompressor.prev_versions.appendleft(version)
         else:
-            out_stream.write(prev_versions[v_index])
+            version = self.decompressor.prev_versions[v_index]
 
         # Prev_block_hash
-        out_stream.write(hash_header(prev_header.read(HEADER_LEN)))
-        prev_header.seek(0)
+        if bitfield & MASK_PREV_BLOCK_HASH:
+            prev_block_hash = header.read(32)
+        else:
+            prev_block_hash = self.decompressor.prev_header.hash
 
         # Merkle_root
-        out_stream.write(in_stream.read(32))
+        merkle_root = header.read(32)
 
         # Time
         if bitfield & MASK_TIME:
-            (time_offset,) = struct.unpack("<h", in_stream.read(2))
-            prev_header.seek(68)
-            (time_prev,) = struct.unpack("I", prev_header.read(4))
-            prev_header.seek(0)
-            out_stream.write(struct.pack("I", (time_prev + time_offset)))
+            (time_offset,) = struct.unpack("<h", header.read(2))
+            (time_prev,) = struct.unpack("I", self.decompressor.prev_header.time)
+            time = struct.pack("I", (time_prev + time_offset))
         else:
-            out_stream.write(in_stream.read(4))
+            time = header.read(4)
 
         # nBits
         if bitfield & MASK_NBITS:
-            prev_header.seek(72)
-            out_stream.write(prev_header.read(4))
-            prev_header.seek(0)
+            nBits = self.decompressor.prev_header.nBits
         else:
-            out_stream.write(in_stream.read(4))
+            nBits = header.read(4)
 
         # Nonce
-        out_stream.write(in_stream.read(4))
+        nonce = header.read(4)
 
-        # Check if this is final header
-        if bitfield & MASK_END:
-            end = True
+        header = Header(version, prev_block_hash, merkle_root, time, nBits, nonce)
+        self.decompressor.prev_header = header
+        return header.to_bytes
 
+    def decompress_header(self, header: bytes) -> Header:
+        """
+        decompress takes a stream of compressed header(s) of length (start ... end) and a
+        previous_header bytes object.
+        It decompresses all compressed headers and inserts them into the return stream,
+        excluding the previous_header.
 
-def decompress_headers(
-    in_stream: BytesIO, out_stream: BytesIO, prev_header: bytes
-) -> bool:
-    """
-    decompress takes a stream of compressed header(s) of length (start ... end) and a
-    previous_header bytes object.
-    It decompresses all compressed headers and inserts them into the return stream,
-    excluding the previous_header.
-
-    :return bool indicating success
-    """
-    try:
-        _decompress(in_stream, out_stream, prev_header)
-    # Likely an error from stream reading or writing
-    except OSError as e:
-        logger.exception(e)
-        return False
-    # An error with packing or unpacking with struct
-    except struct.error as e:
-        logger.exception(e)
-        return False
-
-    return True
+        :return bool indicating success
+        """
+        try:
+            header = self._decompress(header)
+        # Likely an error from stream reading or writing
+        except OSError as e:
+            logger.exception(e)
+        # An error with packing or unpacking with struct
+        except struct.error as e:
+            logger.exception(e)
+        return header
