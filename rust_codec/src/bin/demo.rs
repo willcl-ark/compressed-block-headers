@@ -43,7 +43,7 @@ fn decompress_headers<R: Read, W: Write>(
             Ok(_) => (),
             Err(e) => match e.kind() {
                 UnexpectedEof => {
-                    print!("Reached EOF");
+                    print!("Reached EOF\n");
                     return ()
                 }
                 _ => {
@@ -92,32 +92,34 @@ pub fn diff_files(f1: &mut File, f2: &mut File) -> bool {
     }
 }
 
-fn diff_files2(f1: &mut File, f2: &mut File) -> () {
+// Takes two files and compares them
+// https://docs.rs/file_diff/1.0.0/src/file_diff/lib.rs.html#7-106
+pub fn diff_files2(f1: &mut File, f2: &mut File) -> bool {
     let buff1: &mut [u8] = &mut [0; 80];
     let buff2: &mut [u8] = &mut [0; 80];
-    let mut count: usize = 1;
+    let mut count = 1;
     loop {
-        match f1.read_exact(buff1) {
-            Err(_) => println!("error reading from f1 at count: {}", count),
-            Ok(_) => match f2.read_exact(buff2) {
-                Err(_) => println!("error reading from f2 at count: {}", count),
-                Ok(_) => {
-                    if &buff1[..] != &buff2[..] {
-						let mut i:usize = 0;
-						while i < 80 {
-                            if buff1[i] != buff2[i] {
-                                println!("mismatch in header {} at byte {}", count, i);
-                            }
-                            i += 1;
-                        }
+        match f1.read(buff1) {
+            Err(_) => return false,
+            Ok(f1_read_len) => match f2.read(buff2) {
+                Err(_) => return false,
+                Ok(f2_read_len) => {
+                    if f1_read_len != f2_read_len {
+                        return false;
                     }
+                    if f1_read_len == 0 {
+                        return true;
+                    }
+                    if &buff1[0..f1_read_len] != &buff2[0..f2_read_len] {
+                        println!("Error reading header {}:\n {:?}\n{:?}", count, buff1.to_vec(), buff2.to_vec());
+                        // return false;
+                    }
+                    println!("header {}:\n {:?}\n{:?}", count, buff1.to_vec(), buff2.to_vec());
                 }
             },
         }
         count += 1;
-
     }
-
 }
 
 fn main() -> std::io::Result<()> {
@@ -162,8 +164,8 @@ fn main() -> std::io::Result<()> {
     rewind_cursors(&mut vec![&original, &decompressed]);
 
     // Compare original to decompressed
-    diff_files(&mut original, &mut decompressed);
-    // diff_files2(&mut original, &mut decompressed);
+    // let same = diff_files(&mut original, &mut decompressed);
+    diff_files2(&mut original, &mut decompressed);
     // println!("Decompressed matches original: {}", same);
 
     Ok(())

@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha224};
 use std::convert::TryInto;
 
 // A Blockheader which can hold both compressed and uncompressed headers
@@ -56,6 +56,11 @@ impl BlockHeader {
         hasher.update(&self.n_bits.to_le_bytes());
         hasher.update(&self.nonce.to_le_bytes());
 
+        let result = hasher.finalize();
+
+        // Second round
+        let mut hasher = Sha256::new();
+        hasher.update(result);
         let result = hasher.finalize();
         result.into()
     }
