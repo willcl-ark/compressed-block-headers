@@ -1,11 +1,10 @@
 use std::env;
-use std::fs::{metadata, File, OpenOptions};
+use std::fs::{metadata, File, OpenOptions, remove_file};
 use std::io::{prelude::*, ErrorKind::UnexpectedEof, Read, SeekFrom, Write};
 
 extern crate rust_codec;
 use rust_codec::codec;
 
-const ORIGINAL: &str = "/Users/will/src/compressed-block-headers/headers00.dat";
 const COMPRESSED: &str = "/tmp/compressed_headers.dat";
 const DECOMPRESSED: &str = "/tmp/decompressed_headers.dat";
 
@@ -25,7 +24,7 @@ fn compress_headers<R: Read, W: Write>(
                     return total_bytes;
                 }
                 _ => {
-                    panic!("Unexpected error reading from file");
+                    panic!("Unexpected error reading uncompressed header");
                 }
             },
         }
@@ -41,13 +40,16 @@ fn decompress_headers<R: Read, W: Write>(
 ) -> () {
     loop {
         match codec.decompress(input, output) {
-            Ok(_) => {
-                ();
-            }
-            Err(_) => {
-                println!("Error decompressing header");
-                break;
-            }
+            Ok(_) => (),
+            Err(e) => match e.kind() {
+                UnexpectedEof => {
+                    print!("Reached EOF");
+                    return ()
+                }
+                _ => {
+                    panic!("Unexpected error reading compressed header");
+                }
+            },
         }
     }
 }
@@ -90,21 +92,60 @@ pub fn diff_files(f1: &mut File, f2: &mut File) -> bool {
     }
 }
 
+fn diff_files2(f1: &mut File, f2: &mut File) -> () {
+    let buff1: &mut [u8] = &mut [0; 80];
+    let buff2: &mut [u8] = &mut [0; 80];
+    let mut count: usize = 1;
+    loop {
+        match f1.read_exact(buff1) {
+            Err(_) => println!("error reading from f1 at count: {}", count),
+            Ok(_) => match f2.read_exact(buff2) {
+                Err(_) => println!("error reading from f2 at count: {}", count),
+                Ok(_) => {
+                    if &buff1[..] != &buff2[..] {
+						let mut i:usize = 0;
+						while i < 80 {
+                            if buff1[i] != buff2[i] {
+                                println!("mismatch in header {} at byte {}", count, i);
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+            },
+        }
+        count += 1;
+
+    }
+
+}
+
 fn main() -> std::io::Result<()> {
     let original: String = env::args()
         .nth(1)
         .expect("Pass filepath to uncompressed binary headers file");
+	let _len = metadata(&original).unwrap().len();
+    let _count = _len / 80;
     println!(
-        "Total size of uncompressed headers: {} B",
-        metadata(&original).unwrap().len()
+        "Total size of {} uncompressed headers: {} B",
+        _count,
+        _len,
     );
     let mut codec = codec::Codec::new();
     let mut original: File = OpenOptions::new().read(true).open(original)?;
+    match remove_file(COMPRESSED) {
+        Ok(_) => (),
+        Err(e) => println!("Error removing file: {} : {:?}", COMPRESSED, e),
+    }
     let mut compressed: File = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(COMPRESSED)?;
+    match remove_file(DECOMPRESSED) {
+        Ok(_) => (),
+        Err(e) => println!("Error removing file: {} : {:?}", DECOMPRESSED, e),
+    }
     let mut decompressed: File = OpenOptions::new()
         .read(true)
         .write(true)
@@ -120,8 +161,9 @@ fn main() -> std::io::Result<()> {
     decompress_headers(&mut compressed, &mut decompressed, &mut codec);
     rewind_cursors(&mut vec![&original, &decompressed]);
 
-    // // Compare original to decompressed
-    // let same: bool = diff_files(&mut original, &mut decompressed);
+    // Compare original to decompressed
+    diff_files(&mut original, &mut decompressed);
+    // diff_files2(&mut original, &mut decompressed);
     // println!("Decompressed matches original: {}", same);
 
     Ok(())

@@ -55,6 +55,7 @@ impl Codec {
         // Initialise an empty bitfield and result vector
         let mut bitfield: u8 = 0b00000000;
         let mut result: Vec<u8> = Vec::new();
+        // println!("{}", header.version);
 
         // Version
         if self
@@ -85,10 +86,12 @@ impl Codec {
 
         // Prev Block Hash
         match &self.compressor.prev_header {
-            Some(_) => {}
+            Some(_) => {
+				// We set the bitflag to indicate prev_block_hash omitted
+                bitfield = bitfield ^ MASK_PREV_BLOCK_HASH;
+            }
             None => {
                 // Only send prev_block_hash with first header *of the session*
-                bitfield = bitfield ^ MASK_PREV_BLOCK_HASH;
                 for byte in &header.prev_block_hash {
                     result.push(*byte);
                 }
@@ -144,6 +147,7 @@ impl Codec {
 
         // Write the bitfield to the *front* of the result
         result.insert(0, bitfield);
+        // println!("compressed bitfield: {}", bitfield);
 
         // Update compressor's prev_header to current header
         self.compressor.prev_header = Some(header);
@@ -166,29 +170,36 @@ impl Codec {
         // Read the bitfield
         input.read_exact(&mut self.decompressor.buf.b1)?;
         let bitfield: u8 = u8::from_le_bytes(self.decompressor.buf.b1.try_into().unwrap());
+        // println!("decompressed bitfield: {}", bitfield);
 
         // Version
         let version_index = bitfield >> 5;
-        if version_index == NEW_VERSION {
-            // Read a full 4 bytes
-            input.read_exact(&mut self.decompressor.buf.b4)?;
-            // Convert to u32
-            header.version = i32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
-            self.decompressor
-                .prev_versions
-                .insert(header.version.clone());
-        } else {
-            // Lookup the version from the deque using v_index
-            header.version = self.decompressor.prev_versions.queue[version_index as usize];
+        match version_index {
+            NEW_VERSION => {
+                // Read a full 4 bytes
+                input.read_exact(&mut self.decompressor.buf.b4)?;
+                // Convert to u32
+                header.version = i32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
+                self.decompressor
+                    .prev_versions
+                    .insert(header.version.clone());
+            }
+			_ => {
+                // Lookup the version from the deque using v_index
+                header.version = self.decompressor.prev_versions.queue[version_index as usize];
+            }
         }
 
         // Prev_block_hash
-        if (bitfield & MASK_PREV_BLOCK_HASH) > 0 {
-            input.read_exact(&mut self.decompressor.buf.b32)?;
-            header.prev_block_hash = self.decompressor.buf.b32.clone();
-        } else {
-            // Read it from the cached previous header
-            header.prev_block_hash = self.decompressor.prev_header.as_ref().unwrap().prev_block_hash.clone();
+		match bitfield & MASK_PREV_BLOCK_HASH {
+            MASK_PREV_BLOCK_HASH => {
+                // Calculate it from the cached previous header received
+                header.prev_block_hash = self.decompressor.prev_header.as_ref().unwrap().hash();
+            }
+            _ => {
+                input.read_exact(&mut self.decompressor.buf.b32)?;
+                header.prev_block_hash = self.decompressor.buf.b32.clone();
+            }
         }
 
         // Merkle root
@@ -196,22 +207,32 @@ impl Codec {
         header.merkle_root = self.decompressor.buf.b32.try_into().unwrap();
 
         // Time
-        if (bitfield & MASK_TIME) > 0 {
-            input.read_exact(&mut self.decompressor.buf.b2)?;
-            let time_offset = i16::from_le_bytes(self.decompressor.buf.b2.try_into().unwrap());
-            header.time = (self.decompressor.prev_header.as_ref().unwrap().time as i64
-                + time_offset as i64) as u32;
-        } else {
-            input.read_exact(&mut self.decompressor.buf.b4)?;
-            header.time = u32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
+		match bitfield & MASK_TIME {
+			// 2 Bytes offset
+            MASK_TIME => {
+                input.read_exact(&mut self.decompressor.buf.b2)?;
+                let time_offset = i16::from_le_bytes(self.decompressor.buf.b2.try_into().unwrap());
+                header.time = (self.decompressor.prev_header.as_ref().unwrap().time as i64
+                    + time_offset as i64) as u32;
+            }
+            // Full 4 bytes
+            _ => {
+                input.read_exact(&mut self.decompressor.buf.b4)?;
+                header.time = u32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
+            }
         }
 
         // n_bits
-        if (bitfield & MASK_NBITS) > 0 {
-            header.n_bits = self.decompressor.prev_header.as_ref().unwrap().n_bits;
-        } else {
-            input.read_exact(&mut self.decompressor.buf.b4)?;
-            header.n_bits = u32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
+		match bitfield & MASK_NBITS {
+            // Same as previous, 0 bytes
+            MASK_NBITS => {
+                header.n_bits = self.decompressor.prev_header.as_ref().unwrap().n_bits;
+            }
+			// Full 4 bytes
+            _ => {
+                input.read_exact(&mut self.decompressor.buf.b4)?;
+                header.n_bits = u32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
+            }
         }
 
         // Nonce
@@ -219,7 +240,7 @@ impl Codec {
         header.nonce = u32::from_le_bytes(self.decompressor.buf.b4.try_into().unwrap());
 
 		// Write serialize the header into `output`
-        output.write_all(&header.serialize()[..]);
+        output.write_all(&header.serialize()[..])?;
 
         // Clone it into `prev_header`
         self.decompressor.prev_header = Some(header.clone());
