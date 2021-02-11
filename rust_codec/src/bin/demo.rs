@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::{metadata, File, OpenOptions, remove_file};
+use std::fs::{metadata, remove_file, File, OpenOptions};
 use std::io::{prelude::*, ErrorKind::UnexpectedEof, Read, SeekFrom, Write};
 
 extern crate rust_codec;
@@ -44,7 +44,7 @@ fn decompress_headers<R: Read, W: Write>(
             Err(e) => match e.kind() {
                 UnexpectedEof => {
                     print!("Reached EOF\n");
-                    return ()
+                    return ();
                 }
                 _ => {
                     panic!("Unexpected error reading compressed header");
@@ -67,54 +67,26 @@ fn rewind_cursors<S: Seek>(readers: &mut Vec<S>) -> () {
 }
 
 // Takes two files and compares them
-// https://docs.rs/file_diff/1.0.0/src/file_diff/lib.rs.html#7-106
-pub fn diff_files(f1: &mut File, f2: &mut File) -> bool {
-    let buff1: &mut [u8] = &mut [0; 1024];
-    let buff2: &mut [u8] = &mut [0; 1024];
-    loop {
-        match f1.read(buff1) {
-            Err(_) => return false,
-            Ok(f1_read_len) => match f2.read(buff2) {
-                Err(_) => return false,
-                Ok(f2_read_len) => {
-                    if f1_read_len != f2_read_len {
-                        return false;
-                    }
-                    if f1_read_len == 0 {
-                        return true;
-                    }
-                    if &buff1[0..f1_read_len] != &buff2[0..f2_read_len] {
-                        return false;
-                    }
-                }
-            },
-        }
-    }
-}
-
-// Takes two files and compares them
-// https://docs.rs/file_diff/1.0.0/src/file_diff/lib.rs.html#7-106
-pub fn diff_files2(f1: &mut File, f2: &mut File) -> bool {
+// Adapted from https://docs.rs/file_diff/1.0.0/src/file_diff/lib.rs.html#7-106
+pub fn diff_files(f1: &mut File, f2: &mut File) -> Result<(), i32> {
     let buff1: &mut [u8] = &mut [0; 80];
     let buff2: &mut [u8] = &mut [0; 80];
     let mut count = 1;
     loop {
         match f1.read(buff1) {
-            Err(_) => return false,
+            Err(_) => return Err(count),
             Ok(f1_read_len) => match f2.read(buff2) {
-                Err(_) => return false,
+                Err(_) => return Err(count),
                 Ok(f2_read_len) => {
                     if f1_read_len != f2_read_len {
-                        return false;
+                        return Err(count);
                     }
                     if f1_read_len == 0 {
-                        return true;
+                        return Ok(());
                     }
                     if &buff1[0..f1_read_len] != &buff2[0..f2_read_len] {
-                        println!("Error reading header {}:\n {:?}\n{:?}", count, buff1.to_vec(), buff2.to_vec());
-                        // return false;
+                        return Err(count);
                     }
-                    println!("header {}:\n {:?}\n{:?}", count, buff1.to_vec(), buff2.to_vec());
                 }
             },
         }
@@ -126,13 +98,9 @@ fn main() -> std::io::Result<()> {
     let original: String = env::args()
         .nth(1)
         .expect("Pass filepath to uncompressed binary headers file");
-	let _len = metadata(&original).unwrap().len();
+    let _len = metadata(&original).unwrap().len();
     let _count = _len / 80;
-    println!(
-        "Total size of {} uncompressed headers: {} B",
-        _count,
-        _len,
-    );
+    println!("Total size of {} uncompressed headers: {} B", _count, _len,);
     let mut codec = codec::Codec::new();
     let mut original: File = OpenOptions::new().read(true).open(original)?;
     match remove_file(COMPRESSED) {
@@ -164,9 +132,12 @@ fn main() -> std::io::Result<()> {
     rewind_cursors(&mut vec![&original, &decompressed]);
 
     // Compare original to decompressed
-    // let same = diff_files(&mut original, &mut decompressed);
-    diff_files2(&mut original, &mut decompressed);
-    // println!("Decompressed matches original: {}", same);
-
+    match diff_files(&mut original, &mut decompressed) {
+        Ok(()) => println!("Decompressed headers match originals!"),
+        Err(count) => println!(
+            "Decompressed headers don't match originals, error at header {}",
+            count
+        ),
+    }
     Ok(())
 }

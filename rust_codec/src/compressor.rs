@@ -1,7 +1,7 @@
 use crate::blockheader::BlockHeader;
 
 pub struct Deque {
-    // A 7 slot FIFO deque for storing previous version(s)
+    // A 7 slot FIFO deque for storing previous `versions`
     pub(crate) queue: Vec<i32>,
 }
 
@@ -34,7 +34,7 @@ impl Buffers {
 }
 
 pub(crate) struct CompressorState {
-    // Stores state for a (de)compressor
+    // Stores state for a codec
     pub(crate) prev_versions: Deque,
     pub(crate) prev_header: Option<BlockHeader>,
     pub(crate) buf: Buffers,

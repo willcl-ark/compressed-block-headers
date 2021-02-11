@@ -1,7 +1,7 @@
-use sha2::{Digest, Sha256, Sha224};
+use sha2::{Digest, Sha256};
 use std::convert::TryInto;
 
-// A Blockheader which can hold both compressed and uncompressed headers
+// A Blockheader which can hold uncompressed headers
 #[derive(Clone, Debug)]
 pub struct BlockHeader {
     pub(crate) version: i32,
@@ -24,7 +24,6 @@ impl BlockHeader {
         }
     }
 
-    // Takes an 80 byte vector
     pub fn deserialize(header: &Vec<u8>) -> BlockHeader {
         BlockHeader {
             version: i32::from_le_bytes(header[0..4].try_into().unwrap()),
@@ -42,7 +41,7 @@ impl BlockHeader {
         buffer.append(&mut self.prev_block_hash.to_vec());
         buffer.append(&mut self.merkle_root.to_vec());
         buffer.append(&mut self.time.to_le_bytes().to_vec());
-    	buffer.append(&mut self.n_bits.to_le_bytes().to_vec());
+        buffer.append(&mut self.n_bits.to_le_bytes().to_vec());
         buffer.append(&mut self.nonce.to_le_bytes().to_vec());
         buffer
     }
@@ -55,9 +54,7 @@ impl BlockHeader {
         hasher.update(&self.time.to_le_bytes());
         hasher.update(&self.n_bits.to_le_bytes());
         hasher.update(&self.nonce.to_le_bytes());
-
         let result = hasher.finalize();
-
         // Second round
         let mut hasher = Sha256::new();
         hasher.update(result);
