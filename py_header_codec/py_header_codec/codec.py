@@ -10,7 +10,7 @@ Bit(s)              Set                                 Unset
 1 version:          n'th version.
 2                   7 indicates new distinct version
 -----
-3 prev_block_hash:  32 bytes included.                  Omitted (0 bytes)
+3 prev_block_hash:  Omitted (0 bytes)                   32 bytes included.
 4 timestamp:        2 byte offset from previous.        new 4 byte timestamp to follow
 5 nBits:            same as previous (0 byte field).    new 4 byte field to follow
 6
@@ -18,12 +18,12 @@ Bit(s)              Set                                 Unset
 
 Uncompressed header structure:
 ---------------------
-version         0:4
-prev_block_hash 4:36
-merkle_root     36:68
-time            68:72
-nBits           72:76
-nonce           76:80
+version         0:4     be
+prev_block_hash 4:36    le
+merkle_root     36:68   le
+time            68:72   le
+nBits           72:76   le
+nonce           76:80   le
 """
 
 import ctypes

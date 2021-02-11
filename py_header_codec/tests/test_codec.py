@@ -8,8 +8,7 @@ from random import randint
 from time import perf_counter
 
 import requests
-from header_codec.codec import compress_headers, CompressionError, decompress_headers, \
-    hash_header, HEADER_LEN
+from py_header_codec.codec import Codec, Header, HEADER_LEN
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("test_codec")
@@ -22,14 +21,15 @@ GENESIS_HEADER = b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 
 class Source(Enum):
     FILE = 1
-    REST =2
+    REST = 2
 
 
 def header_hex(header: bytes):
-    return bytes(reversed(hash_header(header))).hex()
+    _header = Header.from_bytes(header)
+    return bytes(reversed(_header.hash)).hex()
 
 
-def bitcoin_rest_request(request: str) -> bytes:
+def bitcoin_rest_request(request: str):
     response = requests.get(request)
     if not response.status_code == 200:
         raise requests.RequestException(
@@ -61,30 +61,35 @@ def get_headers(blockhash="", count=2000, height=0, to_tip=True) -> BytesIO:
             end = start + (HEADER_LEN * count)
             return BytesIO(read_headers_file(args.file)[start:end])
         return BytesIO(read_headers_file(args.file))
-    else:
-        headers = BytesIO()
-        if not blockhash:
-            # Start from genesis hash
-            best_hash = header_hex(GENESIS_HEADER)
-        else:
-            best_hash = blockhash
 
-        if to_tip:
-            while True:
-                # Drop first header as we already have it
-                header_block = get_header_block(blockhash=best_hash, count=count)[80:]
-                headers.write(header_block)
-                headers.seek(headers.tell() - HEADER_LEN)
-                new_best_hash = header_hex(headers.read(HEADER_LEN))
-                if best_hash == new_best_hash:
-                    break
-                best_hash = new_best_hash
-        else:
+
+def get_headers_REST(blockhash="", count=2000, to_tip=True) -> BytesIO:
+    headers = BytesIO()
+    if not blockhash:
+        # Start from genesis hash
+        headers.write(GENESIS_HEADER)
+        best_hash = header_hex(GENESIS_HEADER)
+    else:
+        best_hash = blockhash
+
+    if to_tip:
+        while True:
             # Drop first header as we already have it
             header_block = get_header_block(blockhash=best_hash, count=count)[80:]
             headers.write(header_block)
-        headers.seek(0)
-        return headers
+            # Rewind to beginning of final header
+            headers.seek(-HEADER_LEN, 2)
+            # Hash it to get the new best hash
+            new_best_hash = header_hex(headers.read(HEADER_LEN))
+            if best_hash == new_best_hash:
+                break
+            best_hash = new_best_hash
+    else:
+        # Drop first header as we already have it
+        header_block = get_header_block(blockhash=best_hash, count=count)[80:]
+        headers.write(header_block)
+    headers.seek(0)
+    return headers
 
 
 def test_codec(partial=False):
@@ -179,7 +184,12 @@ if __name__ == "__main__":
         SOURCE = Source.REST
         logger.info(f"using headers from bitcoind REST API")
 
-    # Test 2000 headers from a random position in the chain
-    test_codec(partial=True)
-    # Test the entire chain
-    test_codec()
+    # h1 = get_headers_REST()
+    # with open("/raw_headers_bitcoind.dat", "wb") as f:
+    #     h1.seek(0)
+    #     f.write(h1.read())
+
+    # # Test 2000 headers from a random position in the chain
+    # test_codec(partial=True)
+    # # Test the entire chain
+    # test_codec()
