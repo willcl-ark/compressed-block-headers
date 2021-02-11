@@ -1,6 +1,6 @@
 = Compressed block headers
 Will Clark <will8clark@gmail.com>
-v1.1, Jan 2021:
+v1.2, Feb 2021:
 :toc: preamble
 :toclevels: 4
 
@@ -55,10 +55,10 @@ The following table illustrates the proposed `block_header2` data type specifica
 |Time                |4 bytes  |2 \| 4 bytes
 |nBits               |4 bytes  |0 \| 4 bytes
 |nonce               |4 bytes  |4 bytes
-|*Total*             |80 bytes |range: 39 - 49 bytes
+|*Total*             |80 bytes |range: 39 - 81 bytes
 |===
 
-This compression results in a maximum reduction from an 80 byte header to best-case 39 byte header. With 629,474 blocks in the current blockchain, a continuous header sync from genesis (requiring a single full 80 byte header followed by only compressed `block_header2`) has been tested to have its required bandwidth reduced from 50.36MB down to 25.86MB, a saving of 49%.
+This compression results in a maximum reduction from an 80 byte header to best-case 39 byte header. With 629,474 blocks in the current blockchain, a continuous header sync from genesis (requiring a single Full 81 byte header followed by only compressed `block_header2`) has been tested to have its required bandwidth reduced from 50.36MB down to 25.86MB, a saving of 49%.
 
 ==== Bitfield
 
@@ -72,7 +72,7 @@ To make parsing of header messages easier and further increase header compressio
 1 +
 2    |version |same as the `nth` last *distinct* version 0 ... 7 |new distinct version
 |3   |prev_block_hash |is omitted |included
-|4   |timestamp |as 2 byte offset |full 4 byte value
+|4   |timestamp |as 2 byte offset |Full 4 byte value
 |5   |nbits |same as previous header |new 4 byte value
 |6   |sequence_end |final header in sequence |more headers to follow
 |7   |currently undefined ||
@@ -188,7 +188,7 @@ A `headers2` message is returned in response to `getheaders2` or at new header a
 
 === Implementation
 
-* The first header in the first `block_header2[]` vector to a newly-connected client MUST contain the full nBits`, `timestamp`, `version` and `prev_block_hash` fields, along with a correctly populated `bitfield` byte.
+* The first header in the first `block_header2[]` vector to a newly-connected client MUST contain the Full nBits`, `timestamp`, `version` and `prev_block_hash` fields, along with a correctly populated `bitfield` byte.
 * Subsequent headers in a contiguous vector SHOULD follow the compressed <<block_header2 data type>> format.
 * Subsequent compressed headers supplied to an already-connected client (requesting compressed headers), SHOULD follow the compressed <<block_header2 data type>> format.
 
